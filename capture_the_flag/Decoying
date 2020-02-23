@@ -1,0 +1,224 @@
+clear;
+
+N=10;                        % Number of agents
+dt=0.01;                   % numerical steplength
+max_iter = 2500;
+N1 = 4;
+Ll = completeGL(N1);
+Lf = [1 -1 0 0 0 0;-1 1 0 0 0 0;0 0 1 -1 0 0;0 0 -1 1 0 0;0 0 0 0 1 -1;0 0 0 0 -1 1];
+Lfl = [0 0 0 0 0 0;-1 -1 0 0 0 0;0 0 -1 -1 0 0;0 0 0 0 -1 -1];
+L = [Ll Lfl;Lfl' Lf];
+
+
+videoFLag = 1;                          % Change to 1 to record video
+circularInitialConditions = 1;          % Change to 0 for random initial condition (needed for Q2.d)
+                           
+
+% Initialize robotarium
+rb = RobotariumBuilder();
+rbtm = rb.set_number_of_agents(N).set_save_data(false).build();
+[si_to_uni_dyn] = create_si_to_uni_mapping3();
+si_barrier_cert = create_si_barrier_certificate('SafetyRadius', 0.05);
+
+% Initialize robots
+xuni = rbtm.get_poses();                                    % States of real unicycle robots
+x = xuni(1:2,:);                                            % x-y positions only
+rbtm.set_velocities(1:N, zeros(2,N));                       % Assign dummy zero velocity
+rbtm.step();                                                % Run robotarium step
+
+state = 0;
+
+% Reach initial positions on a circle
+if circularInitialConditions        
+    circularTargets = [ cos( 0:2*pi/N:2*pi*(1- 1/N) ) ; sin( 0:2*pi/N:2*pi*(1- 1/N) ) ];
+    errorToInitialPos = x - circularTargets;                % Error
+    errorNorm = [1,1]*(errorToInitialPos.^2);               % Norm of error
+    while max( errorNorm ) > 0.05
+        % Update state variables        
+        xuni = rbtm.get_poses();                            % States of real unicycle robots
+        x = xuni(1:2,:);                                    % x-y positions
+        
+        % Update errors
+        errorToInitialPos = x - circularTargets;
+        errorNorm = [1,1]*(errorToInitialPos.^2);
+        
+        % Conput control inputs
+        u = -0.3.*errorToInitialPos;
+        dx = si_to_uni_dyn(u, xuni);
+        
+        % Assing new control inputs to robots
+        rbtm.set_velocities(1:N, dx);                       % Assign dummy zero velocity
+        rbtm.step();                                        % Run robotarium step
+    end
+    disp('Initial positions reached')
+    
+end
+
+% Initialize video
+if videoFLag 
+    vid = VideoWriter('HW4_formaionControl.mp4', 'MPEG-4');
+    vid.Quality = 100;
+    vid.FrameRate = 72;
+    open(vid);
+    writeVideo(vid, getframe(gcf));
+end
+
+d1k = 1/(3^0.5);
+dij = 1;
+leaderW = 0.5*[0 d1k d1k d1k;d1k 0 dij dij;d1k dij 0 dij;d1k dij dij 0];
+
+W =  0.15*[0 d1k d1k d1k 0 0 0 0 0 0;d1k 0 dij dij dij dij 0 0 0 0;d1k dij 0 dij 0 0 dij dij 0 0;d1k dij dij 0 0 0 0 0 dij dij;0 dij 0 0 0 dij 0 0 0 0;0 dij 0 0 dij 0 0 0 0 0;0 0 dij 0 0 0 0 dij 0 0;0 0 dij 0 0 0 dij 0 0 0;0 0 0 dij 0 0 0 0 0 dij;0 0 0 dij 0 0 0 0 dij 0];
+
+for k = 1:max_iter
+    
+    % Get new data and initialize new null velocities
+    
+    
+    xuni = rbtm.get_poses();                                % Get new robots' states
+    x = xuni(1:2,:);                                        % Extract single integrator states
+
+    du=zeros(2,N);                                           % Initialize velocities to zero
+    error = zeros(N,1);
+    error1 = zeros(N1,1);
+    switch (state)
+    
+        case 0
+        LL = completeGL(N);
+        for i = 1:N
+        for j = topological_neighbors(LL, i)
+                
+            % For each neighbor, calculate appropriate formation control term and
+            % add it to the total velocity
+           du(:, i) = du(:, i) + (x(1:2, j) - x(1:2, i));
+            
+        end 
+        end
+        if k==200
+            state = 2;
+        end
+            
+        case 1
+        
+        for i = N1+1:N
+        for j = topological_neighbors(L, i)
+                
+            % For each neighbor, calculate appropriate formation control term and
+            % add it to the total velocity
+            j_error = (norm(x(1:2, i) - x(1:2, j)) - W(i, j));
+            error(i) = error(i) + abs(j_error); 
+            du(:, i) = du(:, i) + (x(1:2, j) - x(1:2, i))*(j_error);
+            
+        end 
+        end
+        
+        if sum(error)<1
+            state  = 2;
+        end
+        
+        case 2
+        for i = 1:N1
+        for j = topological_neighbors(Ll, i)
+                
+            % For each neighbor, calculate appropriate formation control term and
+            % add it to the total velocity
+            j_error = (norm(x(1:2, i) - x(1:2, j)) - leaderW(i, j));
+            error1(i) = error1(i) + abs(j_error); 
+            du(:, i) = du(:, i) + (x(1:2, j) - x(1:2, i))*(j_error);
+            
+        end 
+        end
+        for i = N1+1:N
+        for j = topological_neighbors(L, i)
+                
+            % For each neighbor, calculate appropriate formation control term and
+            % add it to the total velocity
+            j_error = norm(x(1:2, i) - x(1:2, j)) - W(i, j);
+            error(i) = error(i) + j_error; 
+            du(:, i) = du(:, i) + (x(1:2, j) - x(1:2, i))*(j_error);
+            
+        end 
+        end
+        
+        
+        if sum(error1)<0.01
+            state  = 3;
+        end
+        
+        
+        case 3
+        
+        xg = [1.5;0.8];
+        for i = 1:N1
+        for j = topological_neighbors(Ll, i)
+                
+            % For each neighbor, calculate appropriate formation control term and
+            % add it to the total velocity
+            %j_error = (norm(x(1:2, i) - x(1:2, j)) - leaderW(i, j));
+            %error1(i) = error1(i) + abs(j_error); 
+            j_error = 5;
+            du(:, i) = du(:, i) - (x(1:2, j) + x(1:2, i))*(j_error);
+            
+        end 
+            du(:, i) = du(:, i) + 2*( xg - x(:,i)); 
+        end
+        du(:,1) = 0;
+        
+        
+        for i = N1+1:N
+        for j = topological_neighbors(L, i)
+                
+            % For each neighbor, calculate appropriate formation control term and
+            % add it to the total velocity
+            j_error = norm(x(1:2, i) - x(1:2, j)) - W(i, j);
+            error(i) = error(i) + j_error; 
+            du(:, i) = du(:, i) + (x(1:2, j) - x(1:2, i))*(j_error);
+            
+        end 
+        end
+        
+        if k==2300
+            state = 4;
+        end
+        
+        case 4
+        
+        for i = N1+1:N
+        for j = topological_neighbors(L, i)
+                
+            % For each neighbor, calculate appropriate formation control term and
+            % add it to the total velocity
+            j_error = norm(x(1:2, i) - x(1:2, j)) - W(i, j);
+            error(i) = error(i) + j_error; 
+            du(:, i) = du(:, i) + (x(1:2, j) - x(1:2, i))*(j_error);
+            
+        end 
+        end
+        
+            
+    end
+%     % FILL THIS PART!!!
+%     for i= ...
+%         for j= ...    
+%             u(:,i) = u(:,i) + ... 
+%         end
+%     end
+
+    %dx = si_to_uni_dyn(du, xuni);                            % Convert single integrator inputs into unicycle inputs
+    du = si_barrier_cert(du, xuni);
+    dx = si_to_uni_dyn(du, xuni);
+
+    rbtm.set_velocities(1:N, dx); rbtm.step();              % Set new velocities to robots and update
+    
+    if videoFLag && mod(k,10)                               % Record a video frame every 10 iterations
+            writeVideo(vid, getframe(gcf)); 
+    end
+
+
+end
+
+
+if videoFLag; close(vid); end
+
+% Though we didn't save any data, we still should call r.call_at_scripts_end() after our
+% experiment is over!
+rbtm.call_at_scripts_end();

@@ -1,0 +1,584 @@
+%% Initializations 
+clear;
+N = 12;
+rbtm = Robotarium('NumberOfRobots', N, 'ShowFigure', true);
+NP = 6;                    % Number of protectors (also change these in other defined functions)
+ND = 6;                    % Number of "decoyers"
+protectors = [1:6]';       % indices for two teams
+decoyers = [7:12]';
+iterations = 1000;
+disk_delta  = 0.4;
+wedge_delta = 1.4;
+wedge_theta = 2*pi/3;       
+flag = [1.1;0.1];
+flagpos = [0.6; 0];
+delta_angles = 0:0.01:2*pi;
+disk_angles_x = repmat(disk_delta*cos(delta_angles),1, N);
+disk_angles_y = repmat(disk_delta*sin(delta_angles),1, N);
+collision_flag=zeros(1,6);
+
+wedge_line = 0:0.01:0.4;
+wedge_line_left = repmat(wedge_line,1,N);
+wedge_line_right = repmat(wedge_line,1,N);
+wedge_angle_left = -pi/3; % left-most angle of wedge if theta is aligned with axis
+wedge_angle_right = pi/3; % right-most angle of wedge if theta is aligned with axis
+wedge_angles = wedge_angle_left:0.01:wedge_angle_right; % all intermediate angles to create wedge
+wedge_angles_theta = repmat(wedge_angles,1,N); % A matrix of intermediate angles for efficient computation without loops
+
+[si_to_uni_dyn] = create_si_to_uni_mapping3();
+
+%% initialialize robots with zero velocity
+xuni = rbtm.get_poses();                                    % States of real unicycle robots
+x = xuni(1:2,:);                                            % x-y positions only
+rbtm.set_velocities(1:N, zeros(2,N));                       % Assign dummy zero velocity
+rbtm.step();
+
+%% Graph Specifications - cyclic graph
+theta = pi/N;
+R = [cos(theta) sin(theta),-sin(theta) cos(theta)];
+A = diag(ones(N-1,1),1);
+A(N,1) = 1;
+L = diag(sum(A)) - A;
+A1 = diag(ones(N-1,1),1) + diag(ones(N-1,1),-1);
+A1(N,1) = 1;
+A1(1,N) = 1;
+
+%% Target cycle definition
+radius = 0.4;
+interAgentDistance = radius*2*sin(pi/N);
+distanceBetweenAgents = interAgentDistance;
+%% Draw the delta-disk for protectors and decoyers
+disk_poses = repelem(x,1, length(delta_angles));
+disk_poses_x_p = disk_poses(1,1:length(delta_angles)*NP) + disk_angles_x(1:length(delta_angles)*NP);
+disk_poses_y_p = disk_poses(2,1:length(delta_angles)*NP) + disk_angles_y(1:length(delta_angles)*NP);
+delta_handle_p = scatter(disk_poses_x_p, disk_poses_y_p, 1, 'blue');
+delta_handle_p.XDataSource = 'disk_poses_x_p';
+delta_handle_p.YDataSource = 'disk_poses_y_p';
+
+disk_poses_x_d = disk_poses(1,(length(delta_angles)*NP)+1:end) + disk_angles_x((length(delta_angles)*NP)+1:end);
+disk_poses_y_d = disk_poses(2,(length(delta_angles)*NP)+1:end) + disk_angles_y((length(delta_angles)*NP)+1:end);
+delta_handle_d = scatter(disk_poses_x_d, disk_poses_y_d, 1, 'red');
+delta_handle_d.XDataSource = 'disk_poses_x_d';
+delta_handle_d.YDataSource = 'disk_poses_y_d';
+
+%% Draw wedge for protectors
+wedge_poses = repelem(x,1,length(wedge_angles));
+wedge_poses_theta = repelem(xuni(3,:),1,length(wedge_angles));
+wedge_poses_theta_p = wedge_poses_theta(1,1:length(wedge_angles)*N) + wedge_angles_theta(1:length(wedge_angles)*N);
+wedge_angles_x = wedge_delta.*cos(wedge_poses_theta_p);
+wedge_angles_y = wedge_delta.*sin(wedge_poses_theta_p);
+
+wedge_poses_x_p = wedge_poses(1,1:length(wedge_angles)*N) + wedge_angles_x(1:length(wedge_angles)*N); 
+wedge_poses_y_p = wedge_poses(2,1:length(wedge_angles)*N) + wedge_angles_y(1:length(wedge_angles)*N);
+wedge_handle_p = scatter(wedge_poses_x_p,wedge_poses_y_p,1,'green');
+wedge_handle_p.XDataSource = 'wedge_poses_x_p';
+wedge_handle_p.YDataSource = 'wedge_poses_y_p';
+
+wedge_line_theta = repelem(xuni(3,:),1,length(wedge_line));
+theta_left = repelem(-pi/3,1,length(wedge_line));
+theta_left_final = repmat(theta_left,1,N);
+theta_right = repelem(pi/3,1,length(wedge_line));
+theta_right_final = repmat(theta_right,1,N);
+wedge_line_theta_left = wedge_line_theta + theta_left_final;
+wedge_line_theta_right = wedge_line_theta + theta_right_final;
+wedge_poses_angle = repelem(x,1,length(wedge_line));
+
+wedge_line_left_x = wedge_poses_angle(1,:) + wedge_line_left.*cos(wedge_line_theta_left);
+wedge_line_left_y = wedge_poses_angle(2,:) + wedge_line_left.*sin(wedge_line_theta_left);
+
+wedge_line_right_x = wedge_poses_angle(1,:) + wedge_line_right.*cos(wedge_line_theta_right);
+wedge_line_right_y = wedge_poses_angle(2,:) + wedge_line_right.*sin(wedge_line_theta_right);
+
+wedge_line_handle_left = scatter(wedge_line_left_x,wedge_line_left_y,1,'green');
+wedge_line_handle_right = scatter(wedge_line_right_x,wedge_line_right_y,1,'green');
+
+wedge_line_handle_left.XDataSource = 'wedge_line_left_x';
+wedge_line_handle_left.YDataSource = 'wedge_line_left_y';
+
+wedge_line_handle_right.XDataSource = 'wedge_line_right_x';
+wedge_line_handle_right.YDataSource = 'wedge_line_right_y';
+
+rectangle('Position',[-1.0 -1 2.6 2], 'LineWidth', 3, 'EdgeColor', 'b');
+rectangle('Position',[-1.6 -1 0.6 2], 'LineWidth', 3, 'EdgeColor', 'r' );
+
+rectangle('Position', [0.6 0 0.01 0.10], 'FaceColor', 'b', 'LineWidth', 1, 'EdgeColor', 'b')
+patch([0.6 0.6 0.54], [0.05 0.1 0.05], 'b')
+
+
+%% Achieve initial conditions - protectors and decoyers
+si_barrier_cert = create_si_barrier_certificate('SafetyRadius', 0.1);
+circularTargetsProtectors = [flagpos(1) + 0.3*cos(0:2*pi/NP:2*pi*(1- 1/NP)) ; 0.3*sin( 0:2*pi/NP:2*pi*(1- 1/NP) )];
+errorToInitialPosProtector(:, 1:NP) = x(:,1:NP) - circularTargetsProtectors;                % Error
+errorNormP = [1,1]*(errorToInitialPosProtector.^2);               % Norm of error
+
+targetsDecoyers = [-1.3 * ones(1, ND); linspace(-0.5, 0.5, ND)];
+errorToInitialPosDecoyer(:, 1:ND) = x(:,decoyers) - targetsDecoyers;                % Error
+errorNormD = [1,1]*(errorToInitialPosDecoyer.^2);               % Norm of error
+
+while max(errorNormP + errorNormD) > 0.002
+    % Update state variables        
+    xuni = rbtm.get_poses();                            % States of real unicycle robots
+    x = xuni(1:2,:);                                    % x-y positions
+
+    % Update errors
+    errorToInitialPosProtector(:, 1:NP) = x(:,1:NP) - circularTargetsProtectors;                % Error
+    errorNormP = [1,1]*(errorToInitialPosProtector.^2);
+    errorToInitialPosDecoyer(:, 1:ND) = x(:,NP+1:N) - targetsDecoyers;                % Error
+    errorNormD = [1,1]*(errorToInitialPosDecoyer.^2);
+
+    % Conput control inputs
+    u_protector = -0.3.*errorToInitialPosProtector;
+    u_decoyer = -0.3.*errorToInitialPosDecoyer;
+    du = [u_protector u_decoyer];
+    du = si_barrier_cert(du, xuni);
+    dx = si_to_uni_dyn(du, xuni);
+
+    % Assing new control inputs to robots
+    dx = scale_velocities(dx);
+    rbtm.set_velocities(1:N, dx);                       % Assign dummy zero velocity
+
+    rbtm.step();% Run robotarium step
+
+    disk_poses = repelem(x,1, length(delta_angles));
+    disk_poses_x_p = disk_poses(1,1:length(delta_angles)*NP) + disk_angles_x(1:length(delta_angles)*NP);
+    disk_poses_y_p = disk_poses(2,1:length(delta_angles)*NP) + disk_angles_y(1:length(delta_angles)*NP);
+    disk_poses_x_d = disk_poses(1,(length(delta_angles)*NP)+1:end) + disk_angles_x((length(delta_angles)*NP)+1:end);
+    disk_poses_y_d = disk_poses(2,(length(delta_angles)*NP)+1:end) + disk_angles_y((length(delta_angles)*NP)+1:end);
+
+    wedge_poses = repelem(x,1,length(wedge_angles));
+    wedge_poses_theta = repelem(xuni(3,:),1,length(wedge_angles));
+    wedge_poses_theta_p = wedge_poses_theta(1,1:length(wedge_angles)*N) + wedge_angles_theta(1:length(wedge_angles)*N);
+    wedge_angles_x = wedge_delta.*cos(wedge_poses_theta_p);
+    wedge_angles_y = wedge_delta.*sin(wedge_poses_theta_p);
+    wedge_poses_x_p = wedge_poses(1,1:length(wedge_angles)*N) + wedge_angles_x(1:length(wedge_angles)*N); 
+    wedge_poses_y_p = wedge_poses(2,1:length(wedge_angles)*N) + wedge_angles_y(1:length(wedge_angles)*N);
+    
+    wedge_line_theta = repelem(xuni(3,:),1,length(wedge_line));
+    theta_left = repelem(-pi/3,1,length(wedge_line));
+    theta_left_final = repmat(theta_left,1,N);
+    theta_right = repelem(pi/3,1,length(wedge_line));
+    theta_right_final = repmat(theta_right,1,N);
+    wedge_line_theta_left = wedge_line_theta + theta_left_final;
+    wedge_line_theta_right = wedge_line_theta + theta_right_final;
+    wedge_poses_angle = repelem(x,1,length(wedge_line));
+    wedge_line_left_x = wedge_poses_angle(1,:) + wedge_line_left.*cos(wedge_line_theta_left);
+    wedge_line_left_y = wedge_poses_angle(2,:) + wedge_line_left.*sin(wedge_line_theta_left);
+    wedge_line_right_x = wedge_poses_angle(1,:) + wedge_line_right.*cos(wedge_line_theta_right);
+    wedge_line_right_y = wedge_poses_angle(2,:) + wedge_line_right.*sin(wedge_line_theta_right);
+    
+    refreshdata([delta_handle_p, delta_handle_d, wedge_handle_p,wedge_line_handle_left,wedge_line_handle_right]);
+end
+
+xuni = rbtm.get_poses();                            % States of real unicycle robots
+rbtm.set_velocities(1:N, zeros(2,N));                       % Assign dummy zero velocity
+rbtm.step();                                                % Run robotarium step
+disp('Initial positions reached');
+
+% Correcting the orientation for cyclic pursuit
+x = xuni(1:2,:);
+y = zeros(2,NP);
+y(1,:) = -1.*(x(2,1:NP) - flagpos(2));
+y(2,:) = (x(1,1:NP) - flagpos(1));
+x_theta = xuni(3,1:NP);
+
+x_theta_desired = atan2(y(2,:),y(1,:));
+e =  x_theta_desired - x_theta; 
+e_prime = atan2(sin(e),cos(e));
+e_Norm = norm(e_prime); 
+w = zeros(2,N);
+
+while max(e_Norm) > 0.05
+    xuni = rbtm.get_poses();
+    x_theta = xuni(3,1:NP);
+   
+    e =  x_theta_desired - x_theta; 
+    e_prime = atan2(sin(e),cos(e));
+    e_Norm = norm(e_prime);
+    
+    w(2,1:NP) = 0.3.*e_prime;
+    w = scale_velocities(w);
+    rbtm.set_velocities(1:N, w);                       % Assign dummy zero velocity
+    rbtm.step();  
+    
+    wedge_poses = repelem(x,1,length(wedge_angles));
+    wedge_poses_theta = repelem(xuni(3,:),1,length(wedge_angles));
+    wedge_poses_theta_p = wedge_poses_theta(1,1:length(wedge_angles)*N) + wedge_angles_theta(1:length(wedge_angles)*N);
+    wedge_angles_x = wedge_delta.*cos(wedge_poses_theta_p);
+    wedge_angles_y = wedge_delta.*sin(wedge_poses_theta_p);
+    wedge_poses_x_p = wedge_poses(1,1:length(wedge_angles)*N) + wedge_angles_x(1:length(wedge_angles)*N); 
+    wedge_poses_y_p = wedge_poses(2,1:length(wedge_angles)*N) + wedge_angles_y(1:length(wedge_angles)*N);
+    
+    wedge_line_theta = repelem(xuni(3,:),1,length(wedge_line));
+    theta_left = repelem(-pi/3,1,length(wedge_line));
+    theta_left_final = repmat(theta_left,1,N);
+    theta_right = repelem(pi/3,1,length(wedge_line));
+    theta_right_final = repmat(theta_right,1,N);
+    wedge_line_theta_left = wedge_line_theta + theta_left_final;
+    wedge_line_theta_right = wedge_line_theta + theta_right_final;
+    wedge_poses_angle = repelem(x,1,length(wedge_line));
+    wedge_line_left_x = wedge_poses_angle(1,:) + wedge_line_left.*cos(wedge_line_theta_left);
+    wedge_line_left_y = wedge_poses_angle(2,:) + wedge_line_left.*sin(wedge_line_theta_left);
+    wedge_line_right_x = wedge_poses_angle(1,:) + wedge_line_right.*cos(wedge_line_theta_right);
+    wedge_line_right_y = wedge_poses_angle(2,:) + wedge_line_right.*sin(wedge_line_theta_right);
+       
+    refreshdata([delta_handle_p, wedge_handle_p, wedge_line_handle_left,wedge_line_handle_right]);
+end
+
+disp('Initial positions and orientations reached');
+
+
+%% Switching States of Decoyers and Protectors
+statesDecoyers = 0;
+statesProtectors = 0;
+
+%% Weight Matrix for Decoyers formations
+d = 0.4;
+Wd = [0 d d 0 0 0; d 0 d d 0 0; d d 0 d d 0; 0 d d 0 d d;0 0 0 d 0 d;0 0 0 d d 0 ];
+Wdl = [0 d d; d 0 d; d d 0];
+
+%% Iterate for the previously specified number of iterations
+
+
+
+for t = 1:iterations    
+    % Retrieve the most recent poses from the Robotarium.  The time delay is
+    % approximately 0.033 seconds
+    
+    %% Common
+    
+    
+    xuni = rbtm.get_poses();                                % Get new robots' states
+    x = xuni(1:2,:);                                        % Extract single integrator states
+    dx = zeros(2,N);                                           % Initialize velocities to zero
+    w = zeros(2,N);
+
+    L = updateGraph(x, xuni(3, :), disk_delta, wedge_delta, wedge_theta);
+    
+    %% Protectors
+    Lpd = zeros(N);
+    Lpd(1:NP,NP+1:N) = L(1:NP,NP+1:N);
+    [protectorsInvolved, decoyersInvolved] = find(Lpd);
+          
+    barrierGoal(1,1) = sum( x(1,decoyersInvolved) ) / length(decoyersInvolved);
+    barrierGoal(2,1) = sum( x(2,decoyersInvolved) ) / length(decoyersInvolved);
+    
+    if  ~(isempty (protectorsInvolved) ) 
+        % Checking which agent sees maximum number of decoyers
+        numberOfDecoyersEngaged = zeros(NP,1);
+        for iter = 1:NP
+            numberOfDecoyersEngaged(iter) = abs ( sum (Lpd(iter,:)) );
+        end
+        
+        [MaxDecoyers, MaxEngagedProtector] = max (numberOfDecoyersEngaged);
+        % Do connectivity maintenance with MaxEngagedProtector, MaxEngagedProtector + 1, MaxEngagedProtector - 1
+        % Also run a check for if MaxEngagedProtector = NP then
+        
+        centreDefenceProtector = MaxEngagedProtector;
+        % Do cyclic pursuit
+        % Find agents not doing defence and run cyclic pursuit with them
+        
+        if MaxEngagedProtector == NP
+            defenceProtectors = [ MaxEngagedProtector ; 1 ; MaxEngagedProtector-1];
+        elseif MaxEngagedProtector == 1
+                defenceProtectors = [MaxEngagedProtector ; MaxEngagedProtector+1; NP];
+        else
+                defenceProtectors = [MaxEngagedProtector;MaxEngagedProtector+1;MaxEngagedProtector-1];
+        end
+        
+        p = ismember(protectors,defenceProtectors);
+        cycleProtectors = protectors(~p); 
+        
+        % Set statesProtectors to case 1
+        statesProtectors = 2;
+        
+    else
+        protectorsInvolved = 1:NP;
+        statesProtectors = 0;
+        % Do cyclic pursuit with 6 agents
+        % cycleProtectors =
+        % Set statesProtectors to case 0
+    end
+        
+    
+    switch(statesProtectors)
+       
+        
+       case 0
+           % Run the cyclic pursuit here with 6 agents
+                    
+           
+           for i = 1:NP-1
+               if (norm(x(:,i+1)-x(:,i))-interAgentDistance)>0
+                   alpha = theta - (pi/18);
+                   R = [cos(alpha) sin(alpha);-sin(alpha) cos(alpha)];
+               else
+                   alpha = theta + (pi/18);
+                   R = [cos(alpha) sin(alpha);-sin(alpha) cos(alpha)];
+               end
+               dx(:,i) = dx(:,i) + R*(x(:,i+1)-x(:,i))-((norm(x(:,i)-flagpos)-radius)*(x(:,i)-flagpos));        
+            end
+            if (norm(x(:,1)-x(:,NP))-interAgentDistance)>0
+                alpha = theta - (pi/18);
+                R = [cos(alpha) sin(alpha);-sin(alpha) cos(alpha)];
+            else
+                alpha = theta + (pi/18);
+                R = [cos(alpha) sin(alpha);-sin(alpha) cos(alpha)];
+            end
+            dx(:,NP) = dx(:,NP) + R*(x(:,1)-x(:,NP))-((norm(x(:,NP)-flagpos)-radius)*(x(:,NP)-flagpos));
+            
+            
+      case 1
+          % Make the 3 cyclic pursuit agents do a consensus until each of them
+          % see 2 neighbors
+          % If they see 2 neighbors they stop
+          
+          % Make the 3 defence agents run a consensus on headings 
+          % with respect to the position of the attackers
+          % Switch from this state to the next state when both the
+          % conditions are met
+          distanceToCenter = 0.15;
+          distanceBetweenAgents = 2*distanceToCenter*sin(pi/(NP/2));
+          
+          for i= cycleProtectors
+              for j= cycleProtectors
+                  if i~=j
+                      dx(:,i) = dx(:,i) + (norm(flagpos-x(:,i))-distanceToCenter).*(flagpos-x(:,i)) + (norm(x(:,j)-x(:,i))-distanceBetweenAgents).*(x(:,j)-x(:,i));
+                  end
+              end
+          end
+          
+                
+          
+          
+       %   e_prime = zeros(3,1);
+        %  x_theta = zeros(3,1);
+          
+         % x_location_desired = barrierGoal ; 
+          
+          %for iterateOver = defenceProtectors
+           %x_theta(iterateOver) = xuni(3,iterateOver);
+          % x_theta_desired = atan2(x_location_desired(2),x_location_desired(1));
+           %e = (x_theta_desired - x_theta(iterateOver));
+           %e_prime(iterateOver) = atan2(sin(e),cos(e));
+           %w(2,iterateOver) = 0.3.*e_prime(iterateOver);
+           %w(2,iterateOver) = w(2,iterateOver)./10;
+            
+          %end
+          %flag1 = 0;
+          %flag2 = 0;
+          
+          %if abs(( max(e_prime) )<0.01)
+          %    flag1 = 1;
+          %end
+          
+          %if norm(x(:,cycleProtectors(1))-flagpos)<0.15 && norm(cycleProtectors(2))<0.15 && norm(cycleProtectors(3))<0.15
+          %    flag2 = 1;
+          %end
+          
+          %if (flag1 == 1 && flag2 ==1)
+              statesProtectors = 2;
+          %end
+          
+       case 2
+          
+          % In this case run cyclic pursuit with the 3 designated agents
+          
+          % The defence agents try to move towards the attackers (GO TO GOAL)
+          % Here you might also have to run consensus on headings with
+          % regards to attackers at every stage, in which case we can
+          % separate the previous case into 2 parts and proceed where every
+          % time headings get changed and then they move towards it. Not
+          % sure about this part though
+          
+          % Cyclic Pursuit Agents
+          for i=1: length(cycleProtectors) - 1
+              if (norm(x(:,cycleProtectors(i+1))-x(:,cycleProtectors(i)))-distanceBetweenAgents)>0
+                   alpha = theta - (pi/18);
+                   R = [cos(alpha) sin(alpha);-sin(alpha) cos(alpha)];
+               else
+                   alpha = theta + (pi/18);
+                   R = [cos(alpha) sin(alpha);-sin(alpha) cos(alpha)];
+              end
+              dx(:,cycleProtectors(i)) = dx(:,cycleProtectors(i)) + R*(x(:,cycleProtectors(i+1))-x(:,cycleProtectors(i)))-((norm(x(:,cycleProtectors(i))-flagpos)-distanceToCenter)*(x(:,cycleProtectors(i))-flagpos));
+          end
+          if (norm(x(:,cycleProtectors(1))-x(:,cycleProtectors(NP_new)))-distanceBetweenAgents)>0
+                alpha = theta - (pi/18);
+                R = [cos(alpha) sin(alpha);-sin(alpha) cos(alpha)];
+          else
+                alpha = theta + (pi/18);
+                R = [cos(alpha) sin(alpha);-sin(alpha) cos(alpha)];
+          end
+            dx(:,cycleProtectors(length(cycleProtectors))) = dx(:,cycleProtectors(length(cycleProtectors))) + R*(x(:,cycleProtectors(1))-x(:,cycleProtectors(length(cycleProtectors))))-((norm(x(:,cycleProtectors(length(cycleProtectors)))-flagpos)-distanceToCenter)*(x(:,cycleProtectors(length(cycleProtectors)))-flagpos));      
+         
+          
+          
+          % Defence Agents
+          % CHECK TOPOLOGICAL NEIGHBOURS IMPLEMENTATION ELSE USE THE IDEA
+          % OF TEAMS
+          
+          for i = defenceProtectors
+              for j = defenceProtectors
+                  if i~=j
+                    deltaSeparation = 0.25;
+                    weight = (1 - deltaSeparation / norm ( x(:,i) -  x(:,j) ) )/(disk_delta - norm ( x(:,i) -  x(:,j) ))^3;
+                    dx(:,i) = dx(:,i) + 0.5 * weight * ( x(:,j) - x(:,i) ); 
+                  end
+              end
+          end
+          
+          dx(:,centreDefenceProtector) = dx(:,centreDefenceProtector) + ( barrierGoal - x(:,centreDefenceProtector) ); 
+           
+          
+   end
+   
+    
+    %% Decoyers
+    switch (statesDecoyers)
+        case 0
+            checkLeader1 = 0;
+            checkLeader2 = 0;
+        for i = NP+1 :N
+            
+            for j = topological_neighbors(L,i)
+                dx(:,i) = dx(:,i) + (x(:,j) - x(:,i));
+            end
+            
+            if (i==NP+1 && length(topological_neighbors(L,i))>=4)
+                checkLeader1 = 1;
+            end
+            if (i==NP+6 && length(topological_neighbors(L,i))>=4)
+                checkLeader2 = 1;
+            end
+        end
+        
+        if (checkLeader1 == 1 && checkLeader2 == 1)
+            statesDecoyers = 1;
+        end
+            
+        case 1  
+            xgl1 = [-0.1;0.5];
+            x1greached = 0;
+            if norm(xgl1 - x(:,NP+2)) >=0.01
+                dx(:,NP+2) = dx(:,NP+2) + 0.5 * (xgl1 - x(:,NP+2)) / norm(xgl1 - x(:,NP+2));
+            else
+                x1greached = 1;
+            end
+            x2greached = 0;
+            xgl2 = [-0.1;-0.5];
+            if norm(xgl1 - x(:,NP+2))>=0.01
+                dx(:,NP+5) = dx(:,NP+5) + 0.5*(xgl2 - x(:,NP+5)) / norm(xgl1 - x(:,NP+2));
+            else
+                x2greached = 1;
+            end
+            % Team 1
+            for i = NP+1 : NP+3
+                for j = NP+1 : NP+3
+                    if i~=j
+                        deltaSeparation = 0.25;
+                        weight = (1 - deltaSeparation / norm ( x(:,i) -  x(:,j) ) )/(disk_delta - norm ( x(:,i) -  x(:,j) ))^3;
+                        dx(:,i) = dx(:,i) + 0.1 * weight *( (x(:,j) - x(:,i)));
+                    end
+                end
+            end
+            
+            for i = NP+4 : NP+6
+                for j = NP+4 : NP+6
+                if i~=j
+                        deltaSeparation = 0.25;
+                        weight = (1 - deltaSeparation / norm ( x(:,i) -  x(:,j) ) )/(disk_delta - norm ( x(:,i) -  x(:,j) ))^3;
+                        dx(:,i) = dx(:,i) + 0.1 * weight *( (x(:,j) - x(:,i)));
+                end
+                end
+            end
+            if(x1greached && x2greached)
+                statesDecoyers = 2;
+            end
+            
+        
+   case 2
+                    
+                  %x_theta = xuni(3,i);
+                  %x_location_desired = -x(1:2,i) + flagpos;
+                  %x_theta_desired = atan2(x_location_desired(2,:),x_location_desired(1,:));
+                  %e = (x_theta_desired - x_theta);
+                  %e_prime = atan2(sin(e),cos(e));
+                  %e_norm = norm(e_prime);
+                  %w(2,NP+1:N) = 0.3 * e_prime * ones(ND,1)';
+                  %w(2,NP+1:N) = w(2,NP+1:N)./10;
+                  %if e<0.01
+                   %   statesDecoyers = 3;
+                  %end
+        
+        % Multiple agents attcking should be incorporated
+        case 3
+            for i = [NP+1; NP+3]'
+                if(isempty(find(L(i, 1:NP))))
+                    dx(:, i) = flagpos - x(:, i);
+                else
+                    if(length(find(L(i, 1:NP))) == 1)
+    %                    disp('case 4 else')
+                        j = find(L(i, 1:NP));
+                        dx(:, i) = (norm(x(:, j) - x(:, i)) )*(x(:, j) - x(:, i));
+                    end
+                end
+            end
+            
+            
+    end
+   collision_flag=check_collision(x,collision_flag,NP,N);
+   for kk=1:6
+            if(collision_flag(kk)>0)
+                
+                dx(:,NP+kk)=dx(:,NP+kk)+ targetsDecoyers(kk) - x(:,NP+kk);
+            end
+       
+   end
+   
+
+    du = si_barrier_cert(dx, xuni);
+    dxu = si_to_uni_dyn(du, xuni); 
+    % Convert single integrator inputs into unicycle inputs
+    dxu = dxu +w;
+    dxu = scale_velocities(dxu);
+    rbtm.set_velocities(1:N, dxu); 
+    rbtm.step();              % Set new velocities to robots and update
+
+    disk_poses = repelem(x,1, length(delta_angles));
+    disk_poses_x_p = disk_poses(1,1:length(delta_angles)*NP) + disk_angles_x(1:length(delta_angles)*NP);
+    disk_poses_y_p = disk_poses(2,1:length(delta_angles)*NP) + disk_angles_y(1:length(delta_angles)*NP);
+    disk_poses_x_d = disk_poses(1,(length(delta_angles)*NP)+1:end) + disk_angles_x((length(delta_angles)*NP)+1:end);
+    disk_poses_y_d = disk_poses(2,(length(delta_angles)*NP)+1:end) + disk_angles_y((length(delta_angles)*NP)+1:end);
+
+    wedge_poses = repelem(x,1,length(wedge_angles));
+    wedge_poses_theta = repelem(xuni(3,:),1,length(wedge_angles));
+    wedge_poses_theta_p = wedge_poses_theta(1,1:length(wedge_angles)*N) + wedge_angles_theta(1:length(wedge_angles)*N);
+    wedge_angles_x = wedge_delta.*cos(wedge_poses_theta_p);
+    wedge_angles_y = wedge_delta.*sin(wedge_poses_theta_p);
+    wedge_poses_x_p = wedge_poses(1,1:length(wedge_angles)*N) + wedge_angles_x(1:length(wedge_angles)*N); 
+    wedge_poses_y_p = wedge_poses(2,1:length(wedge_angles)*N) + wedge_angles_y(1:length(wedge_angles)*N);
+    
+    wedge_line_theta = repelem(xuni(3,:),1,length(wedge_line));
+    theta_left = repelem(-pi/3,1,length(wedge_line));
+    theta_left_final = repmat(theta_left,1,N);
+    theta_right = repelem(pi/3,1,length(wedge_line));
+    theta_right_final = repmat(theta_right,1,N);
+    wedge_line_theta_left = wedge_line_theta + theta_left_final;
+    wedge_line_theta_right = wedge_line_theta + theta_right_final;
+    wedge_poses_angle = repelem(x,1,length(wedge_line));
+    wedge_line_left_x = wedge_poses_angle(1,:) + wedge_line_left.*cos(wedge_line_theta_left);
+    wedge_line_left_y = wedge_poses_angle(2,:) + wedge_line_left.*sin(wedge_line_theta_left);
+    wedge_line_right_x = wedge_poses_angle(1,:) + wedge_line_right.*cos(wedge_line_theta_right);
+    wedge_line_right_y = wedge_poses_angle(2,:) + wedge_line_right.*sin(wedge_line_theta_right);
+    
+    refreshdata([delta_handle_p, delta_handle_d, wedge_handle_p,wedge_line_handle_left,wedge_line_handle_right]);
+
+    %% Send velocities to agents
+    
+    % Set velocities of agents 1,...,N
+%    rbtm.set_velocities(1:N, dxu);
+    
+    % Send the previously set velocities to the agents.  This function must be called!
+end
+
+% We should call r.call_at_scripts_end() after our experiment is over!
+rbtm.debug();

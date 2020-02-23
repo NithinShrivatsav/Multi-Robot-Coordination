@@ -1,0 +1,2 @@
+weight = (1 - deltaSeparation / norm ( x(:,NP+3) -  x(:,NP+5) ) )/(disk_delta - norm ( x(:,NP+3) -  x(:,NP+5) ))^3;
+             

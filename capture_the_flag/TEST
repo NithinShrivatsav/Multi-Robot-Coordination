@@ -1,0 +1,193 @@
+clear;
+
+% ensure that if you have N agents, first N/2 are protectors are the rest
+% are decoyers
+N = 12;
+rbtm = Robotarium('NumberOfRobots', N, 'ShowFigure', true);
+NP = 6;                    % Number of protectors (also change these in other defined functions)
+ND = 6;                    % Number of "decoyers"
+protectors = (1:6)';       % indices for two teams
+decoyers = (7:12)';
+dt=0.01;                    % numerical steplength
+max_iter = 2000;  
+
+disk_delta = 0.2;
+wedge_delta = 0.2;
+wedge_theta = 2*pi/3;
+
+delta_angles = 0:0.01:2*pi;
+disk_angles_protect_x = repmat(disk_delta*cos(delta_angles),1, NP);
+disk_angles_protect_y = repmat(disk_delta*sin(delta_angles),1, NP);
+
+disk_angles_decoy_x = repmat(disk_delta*cos(delta_angles),1, ND);
+disk_angles_decoy_y = repmat(disk_delta*sin(delta_angles),1, ND);
+
+
+
+
+% Initialize robotarium
+[si_to_uni_dyn] = create_si_to_uni_mapping3();
+si_barrier_cert = create_si_barrier_certificate('SafetyRadius', 0.05);
+
+% Initialize robots
+xuni = rbtm.get_poses();                                    % States of real unicycle robots
+x = xuni(1:2,:);                                            % x-y positions only
+decoyRobots = x(:,decoyers);
+protectRobots = x(:, protectors);
+rbtm.set_velocities(1:N, zeros(2,N));                       % Assign dummy zero velocity
+rbtm.step();                                                % Run robotarium step
+
+disk_poses_protect = repelem(protectRobots,1, length(delta_angles));
+disk_poses_decoy = repelem(decoyRobots,1, length(delta_angles));
+rectangle('Position',[0.6 -1 1 2], 'LineWidth', 3, 'EdgeColor', 'b');
+
+
+rectangle('Position',[-1.6 -1 1 2], 'LineWidth', 3, 'EdgeColor', 'r' );
+
+rectangle('Position', [1.1 0 0.01 0.10], 'FaceColor', 'b', 'LineWidth', 1, 'EdgeColor', 'b')
+patch([1.1 1.1 1.04], [0.05 0.1 0.05], 'b')
+
+xg = [1.1;0.1];
+disk_poses_x_protect = disk_poses_protect(1,:) + disk_angles_protect_x;
+disk_poses_y_protect = disk_poses_protect(2,:) + disk_angles_protect_y;
+
+disk_poses_x_decoy = disk_poses_decoy(1,:) + disk_angles_decoy_x;
+disk_poses_y_decoy = disk_poses_decoy(2,:) + disk_angles_decoy_y;
+
+
+delta_handle_decoyers = scatter(disk_poses_x_decoy, disk_poses_y_decoy, 1, 'r');
+delta_handle_decoyers.XDataSource = 'disk_poses_x_decoy';
+delta_handle_decoyers.YDataSource = 'disk_poses_y_decoy';
+
+delta_handle_protectors = scatter(disk_poses_x_protect, disk_poses_y_protect,1,'b');
+delta_handle_protectors.XDataSource = 'disk_poses_x_protect';
+delta_handle_protectors.YDataSource = 'disk_poses_y_protect';
+
+%delta_handle_lines = zeros(NP*(NP-1)/2,1);
+%for i = 1:NP*(NP-1)/2
+%    delta_handle_lines(i) = plot([x(1,1) x(1,2)],[x(2,1) x(2,2)]);
+%end
+%delta_handle_vPlot = voronoi(x(1,1:7),x(2,1:7));
+
+%protectors_connected = zeros(NP*(NP-1)/2,2);
+%decoyers_connected = zeros(ND*(ND-1)/2,2);
+
+targets_protectors = [ 1.1 + 0.3*cos(0:2*pi/NP:2*pi*(1- 1/NP)) ; 0.3*sin( 0:2*pi/NP:2*pi*(1- 1/NP)) ];
+errorToInitialPosNP(:, 1:NP) = x(:,1:NP) - targets_protectors;                % Error
+errorNormNP = [1,1]*(errorToInitialPosNP.^2);               % Norm of error
+
+targets_decoyers = 0.5*[-2.2 + 0.3*cos(0:2*pi/ND:2*pi*(1- 1/ND)) ; 0.3*sin( 0:2*pi/ND:2*pi*(1- 1/ND)) ];
+errorToInitialPosND(:, 1:ND) = x(:,1:ND) - targets_decoyers;                % Error
+errorNormND = [1,1]*(errorToInitialPosND.^2);               % Norm of error
+
+while max( errorNormNP + errorNormND) > 0.002
+    % Update state variables        
+    xuni = rbtm.get_poses();                            % States of real unicycle ro\bots
+    x = xuni(1:2,:);                                    % x-y positions
+    % Update errors
+
+errorToInitialPosNP(:, 1:NP) = x(:,1:NP) - targets_protectors;                % Error
+errorToInitialPosND(:, 1:ND) = x(:,NP+1:N) - targets_decoyers;                % Error
+    
+errorNormNP = [1,1]*(errorToInitialPosNP.^2);
+errorNormND = [1,1]*(errorToInitialPosND.^2);
+
+%   u = zeros(2, N);
+    % Conput control inputs
+    %for i = protectors
+     %   for j=delta_disk_neighbors(x, i , disk_delta)
+%            u(:, i) = u(:, i) + x(:, j) + x(:, i);
+      %  end
+  %  end
+    
+    up = -0.3.*errorToInitialPosNP;
+    ud = -0.3.*errorToInitialPosND;
+    du = zeros(2,N);
+    du(1,:) = [up(1,:) ud(1,:)];
+    du(2,:) = [up(2,:) ud(2,:)];
+    du = si_barrier_cert(du, xuni);
+    dx = si_to_uni_dyn(du, xuni);
+
+    
+    % Assing new control inputs to robots
+    rbtm.set_velocities(1:N,dx);                       % Assign dummy zero velocity
+    
+    rbtm.step();% Run robotarium step
+    
+    L = updateGraph(x, xuni(3, :), disk_delta, wedge_delta, wedge_theta);
+    
+    decoyRobots = x(:,decoyers);
+    protectRobots = x(:,protectors);
+
+    disk_poses_protect = repelem(protectRobots,1, length(delta_angles));
+    disk_poses_decoy = repelem(decoyRobots,1, length(delta_angles));
+
+    %disk_poses_x_protect = disk_poses_protect(1,:) + disk_angles_protect_x;
+    %disk_poses_y_protect = disk_poses_protect(2,:) + disk_angles_protect_y;
+
+    %disk_poses_x_decoy = disk_poses_decoy(1,:) + disk_angles_decoy_x;
+    %disk_poses_y_decoy = disk_poses_decoy(2,:) + disk_angles_decoy_y;
+
+
+    %disk_poses = repelem(x,1, length(delta_angles));
+    disk_poses_x_decoy = disk_poses_decoy(1,:) + disk_angles_decoy_x;
+    disk_poses_y_decoy = disk_poses_decoy(2,:) + disk_angles_decoy_y;
+    
+    disk_poses_x_protect = disk_poses_protect(1,:) + disk_angles_protect_x;
+    disk_poses_y_protect = disk_poses_protect(2,:) + disk_angles_protect_y;
+ 
+    
+    
+    refreshdata(delta_handle_decoyers);
+    refreshdata(delta_handle_protectors);
+end
+disp('Initial positions reached')
+
+
+state_decoyer = 0;
+state_protector = 0;
+
+for k = 1:max_iter    
+    % Get new data and initialize new null velocities
+    xuni = rbtm.get_poses();                                % Get new robots' states
+    x = xuni(1:2,:);                                        % Extract single integrator states
+    u=zeros(2,N);                                           % Initialize velocities to zero
+    % FILL THIS PART!!!
+    
+    L = updateGraph(x, xuni(3, :), disk_delta, wedge_delta, wedge_theta);
+    
+    decoyRobots = x(:,8:14);
+    protectRobots = x(:,1:7);
+
+    disk_poses_protect = repelem(protectRobots,1, length(delta_angles));
+    disk_poses_decoy = repelem(decoyRobots,1, length(delta_angles));
+
+    %disk_poses_x_protect = disk_poses_protect(1,:) + disk_angles_protect_x;
+    %disk_poses_y_protect = disk_poses_protect(2,:) + disk_angles_protect_y;
+
+    %disk_poses_x_decoy = disk_poses_decoy(1,:) + disk_angles_decoy_x;
+    %disk_poses_y_decoy = disk_poses_decoy(2,:) + disk_angles_decoy_y;
+
+
+    %disk_poses = repelem(x,1, length(delta_angles));
+    disk_poses_x_decoy = disk_poses_decoy(1,:) + disk_angles_decoy_x;
+    disk_poses_y_decoy = disk_poses_decoy(2,:) + disk_angles_decoy_y;
+    
+    disk_poses_x_protect = disk_poses_protect(1,:) + disk_angles_protect_x;
+    disk_poses_y_protect = disk_poses_protect(2,:) + disk_angles_protect_y;
+ 
+    
+    
+    refreshdata(delta_handle_decoyers);
+    refreshdata(delta_handle_protectors);
+    
+    u(:,8) = u(:,8) + xg - x(:,8);
+    
+    dx = si_to_uni_dyn(u, xuni);                            % Convert single integrator inputs into unicycle inputs
+    rbtm.set_velocities(1:N, dx); rbtm.step();              % Set new velocities to robots and update
+end
+
+
+% Though we didn't save any data, we still should call r.call_at_scripts_end() after our
+% experiment is over!
+rbtm.call_at_scripts_end();
