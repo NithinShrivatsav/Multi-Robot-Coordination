@@ -3,4 +3,5 @@ Investigated network control algorithms for formation control and leader-followe
 [Video of project](https://www.youtube.com/watch?v=ZAj0yj7iQ5Q)
 
 Team Members: Nithin Shrivatsav Srikanth, Akshay Krishnan, Prateek Vishal, Ankitha Manoj
+
 Advisor: Dr. Pietro Pierpaoli 
